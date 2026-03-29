@@ -1,0 +1,1 @@
+ALTER TABLE concepts ADD COLUMN document_id TEXT REFERENCES documents(id) ON DELETE SET NULL;

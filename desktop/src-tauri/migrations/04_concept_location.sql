@@ -1,0 +1,4 @@
+ALTER TABLE concepts ADD COLUMN page_num INTEGER;
+ALTER TABLE concepts ADD COLUMN video_timestamp REAL;
+ALTER TABLE chunks ADD COLUMN page_start INTEGER;
+ALTER TABLE chunks ADD COLUMN page_end INTEGER;

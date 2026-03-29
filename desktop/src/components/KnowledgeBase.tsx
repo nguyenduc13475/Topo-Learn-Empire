@@ -1,3 +1,5 @@
+import { invoke } from "@tauri-apps/api/core";
+import { ask, open as openDialog } from "@tauri-apps/plugin-dialog";
 import Database from "@tauri-apps/plugin-sql";
 import { useEffect, useState } from "react";
 
@@ -10,11 +12,15 @@ interface Concept {
   interval: number;
   repetitions: number;
   next_review_date: number;
+  document_id?: string | null;
+  page_num?: number | null;
+  video_timestamp?: number | null;
 }
 
 export default function KnowledgeBase() {
   const [concepts, setConcepts] = useState<Concept[]>([]);
   const [edges, setEdges] = useState<{ id: string; source: string; target: string }[]>([]);
+  const [documents, setDocuments] = useState<{ id: string; title: string }[]>([]);
   const [editingConcept, setEditingConcept] = useState<Concept | null>(null);
   const [isAdding, setIsAdding] = useState(false);
 
@@ -26,8 +32,13 @@ export default function KnowledgeBase() {
       );
       const edgesResult =
         await db.select<{ id: string; source: string; target: string }[]>("SELECT * FROM edges");
+      const docsResult = await db.select<{ id: string; title: string }[]>(
+        "SELECT id, title FROM documents",
+      );
+
       setConcepts(conceptsResult);
       setEdges(edgesResult);
+      setDocuments(docsResult);
     } catch (err) {
       console.error(err);
     }
@@ -38,12 +49,11 @@ export default function KnowledgeBase() {
   }, []);
 
   const handleDelete = async (id: string) => {
-    if (
-      !window.confirm(
-        "Are you sure you want to delete this concept? This will also remove any prerequisite links attached to it.",
-      )
-    )
-      return;
+    const confirmed = await ask(
+      "Are you sure you want to delete this concept? This will also remove any prerequisite links attached to it.",
+      { kind: "warning" },
+    );
+    if (!confirmed) return;
     try {
       const db = await Database.load("sqlite:topolearn.db");
       await db.execute("DELETE FROM edges WHERE source = $1 OR target = $1", [id]);
@@ -60,7 +70,7 @@ export default function KnowledgeBase() {
       const db = await Database.load("sqlite:topolearn.db");
       if (isAdding) {
         await db.execute(
-          "INSERT INTO concepts (id, label, definition, context, ease_factor, interval, repetitions, next_review_date) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+          "INSERT INTO concepts (id, label, definition, context, ease_factor, interval, repetitions, next_review_date, document_id, page_num, video_timestamp) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
           [
             editingConcept.id,
             editingConcept.label,
@@ -70,11 +80,14 @@ export default function KnowledgeBase() {
             editingConcept.interval,
             editingConcept.repetitions,
             editingConcept.next_review_date,
+            editingConcept.document_id === "" ? null : editingConcept.document_id,
+            editingConcept.page_num || null,
+            editingConcept.video_timestamp || null,
           ],
         );
       } else {
         await db.execute(
-          "UPDATE concepts SET label = $1, definition = $2, context = $3, repetitions = $4, interval = $5, ease_factor = $6 WHERE id = $7",
+          "UPDATE concepts SET label = $1, definition = $2, context = $3, repetitions = $4, interval = $5, ease_factor = $6, document_id = $7, page_num = $8, video_timestamp = $9 WHERE id = $10",
           [
             editingConcept.label,
             editingConcept.definition,
@@ -82,6 +95,9 @@ export default function KnowledgeBase() {
             editingConcept.repetitions,
             editingConcept.interval,
             editingConcept.ease_factor,
+            editingConcept.document_id === "" ? null : editingConcept.document_id,
+            editingConcept.page_num || null,
+            editingConcept.video_timestamp || null,
             editingConcept.id,
           ],
         );
@@ -105,6 +121,7 @@ export default function KnowledgeBase() {
       interval: 0,
       repetitions: 0,
       next_review_date: Math.floor(Date.now() / 1000),
+      document_id: null,
     });
   };
 
@@ -118,6 +135,32 @@ export default function KnowledgeBase() {
           </p>
         </div>
         <div className="flex gap-2">
+          <button
+            onClick={async () => {
+              try {
+                const selectedDir = await openDialog({ directory: true, multiple: false });
+                if (!selectedDir || typeof selectedDir !== "string") return;
+
+                const db = await Database.load("sqlite:topolearn.db");
+                const allConcepts = await db.select("SELECT * FROM concepts");
+                const allEdges = await db.select("SELECT * FROM edges");
+
+                const vaultPath = await invoke<string>("export_obsidian_vault", {
+                  targetDir: selectedDir,
+                  conceptsJson: JSON.stringify(allConcepts),
+                  edgesJson: JSON.stringify(allEdges),
+                });
+
+                alert(`Successfully exported Obsidian Vault to:\n${vaultPath}`);
+              } catch (err) {
+                console.error("Obsidian export failed", err);
+                alert("Failed to export to Obsidian: " + err);
+              }
+            }}
+            className="bg-purple-600 hover:bg-purple-700 text-white font-medium py-2 px-4 rounded shadow-sm transition-colors text-sm cursor-pointer"
+          >
+            🟣 Export to Obsidian
+          </button>
           <button
             onClick={async () => {
               try {
@@ -138,13 +181,13 @@ export default function KnowledgeBase() {
                 alert("Failed to export database.");
               }
             }}
-            className="bg-green-600 hover:bg-green-700 text-white font-medium py-2 px-4 rounded shadow-sm transition-colors text-sm"
+            className="bg-green-600 hover:bg-green-700 text-white font-medium py-2 px-4 rounded shadow-sm transition-colors text-sm cursor-pointer"
           >
             ⬇ Export JSON
           </button>
           <button
             onClick={openAddModal}
-            className="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded shadow-sm transition-colors text-sm"
+            className="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded shadow-sm transition-colors text-sm cursor-pointer"
           >
             + Add Concept
           </button>
@@ -155,51 +198,63 @@ export default function KnowledgeBase() {
         <table className="w-full text-left border-collapse text-sm">
           <thead className="bg-gray-100 sticky top-0 shadow-sm z-10">
             <tr>
-              <th className="p-3 border-b text-gray-700 font-semibold w-1/4">Concept</th>
-              <th className="p-3 border-b text-gray-700 font-semibold w-1/2">Definition</th>
-              <th className="p-3 border-b text-gray-700 font-semibold text-center">
-                Stats (Rep/Int)
-              </th>
+              <th className="p-3 border-b text-gray-700 font-semibold w-1/5">Concept</th>
+              <th className="p-3 border-b text-gray-700 font-semibold w-2/5">Definition</th>
+              <th className="p-3 border-b text-gray-700 font-semibold w-1/5">Document</th>
+              <th className="p-3 border-b text-gray-700 font-semibold text-center">Stats</th>
               <th className="p-3 border-b text-gray-700 font-semibold text-center">Actions</th>
             </tr>
           </thead>
           <tbody>
-            {concepts.map((c) => (
-              <tr
-                key={c.id}
-                className="hover:bg-gray-50 border-b border-gray-100 transition-colors"
-              >
-                <td className="p-3 font-medium text-blue-800 align-top">{c.label}</td>
-                <td className="p-3 text-gray-600 align-top line-clamp-3" title={c.definition}>
-                  {c.definition}
-                </td>
-                <td className="p-3 text-center align-top text-gray-500">
-                  <span className="bg-gray-100 px-2 py-1 rounded text-xs">
-                    {c.repetitions} / {c.interval}d
-                  </span>
-                </td>
-                <td className="p-3 align-top text-center">
-                  <div className="flex justify-center gap-2">
-                    <button
-                      onClick={() => {
-                        setIsAdding(false);
-                        setEditingConcept(c);
-                      }}
-                      className="text-blue-600 hover:text-blue-800 font-medium"
+            {concepts.map((c) => {
+              const docName = documents.find((d) => d.id === c.document_id)?.title || "Global";
+              return (
+                <tr
+                  key={c.id}
+                  className="hover:bg-gray-50 border-b border-gray-100 transition-colors"
+                >
+                  <td className="p-3 font-medium text-blue-800 align-top">{c.label}</td>
+                  <td className="p-3 text-gray-600 align-top">
+                    <div className="line-clamp-3" title={c.definition}>
+                      {c.definition}
+                    </div>
+                  </td>
+                  <td className="p-3 text-gray-500 align-top text-xs">
+                    <span
+                      className="bg-indigo-50 text-indigo-700 border border-indigo-100 px-2 py-1 rounded-full line-clamp-2 text-center"
+                      title={docName}
                     >
-                      Edit
-                    </button>
-                    <span className="text-gray-300">|</span>
-                    <button
-                      onClick={() => handleDelete(c.id)}
-                      className="text-red-600 hover:text-red-800 font-medium"
-                    >
-                      Delete
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            ))}
+                      {docName}
+                    </span>
+                  </td>
+                  <td className="p-3 text-center align-top text-gray-500">
+                    <span className="bg-gray-100 px-2 py-1 rounded text-xs whitespace-nowrap">
+                      {c.repetitions} / {c.interval}d
+                    </span>
+                  </td>
+                  <td className="p-3 align-top text-center">
+                    <div className="flex justify-center gap-2">
+                      <button
+                        onClick={() => {
+                          setIsAdding(false);
+                          setEditingConcept(c);
+                        }}
+                        className="text-blue-600 hover:text-blue-800 font-medium cursor-pointer"
+                      >
+                        Edit
+                      </button>
+                      <span className="text-gray-300">|</span>
+                      <button
+                        onClick={() => handleDelete(c.id)}
+                        className="text-red-600 hover:text-red-800 font-medium cursor-pointer"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
             {concepts.length === 0 && (
               <tr>
                 <td colSpan={4} className="p-8 text-center text-gray-500">
@@ -300,6 +355,55 @@ export default function KnowledgeBase() {
                   className="w-full p-2 border border-gray-300 rounded h-24 outline-none focus:ring-2 focus:ring-blue-500 resize-none text-xs text-gray-600"
                   placeholder="Paste the paragraph where you learned this..."
                 />
+              </div>
+
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-1 mt-4">
+                  Linked Document
+                </label>
+                <div className="flex gap-2">
+                  <select
+                    value={editingConcept.document_id || ""}
+                    onChange={(e) =>
+                      setEditingConcept({ ...editingConcept, document_id: e.target.value || null })
+                    }
+                    className="flex-1 p-2 border border-gray-300 rounded outline-none focus:ring-2 focus:ring-blue-500 text-sm bg-white"
+                  >
+                    <option value="">Global (No Document)</option>
+                    {documents.map((doc) => (
+                      <option key={doc.id} value={doc.id}>
+                        {doc.title}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    type="number"
+                    placeholder="Page Num"
+                    value={editingConcept.page_num || ""}
+                    onChange={(e) =>
+                      setEditingConcept({
+                        ...editingConcept,
+                        page_num: parseInt(e.target.value) || null,
+                      })
+                    }
+                    className="w-24 p-2 text-sm border border-gray-300 rounded outline-none focus:ring-2 focus:ring-blue-500"
+                    title="PDF Page Number"
+                  />
+                  <input
+                    type="number"
+                    step="0.1"
+                    placeholder="Video Secs"
+                    value={editingConcept.video_timestamp || ""}
+                    onChange={(e) =>
+                      setEditingConcept({
+                        ...editingConcept,
+                        video_timestamp: parseFloat(e.target.value) || null,
+                      })
+                    }
+                    className="w-28 p-2 text-sm border border-gray-300 rounded outline-none focus:ring-2 focus:ring-blue-500"
+                    title="Video Timestamp in Seconds"
+                  />
+                </div>
               </div>
 
               {!isAdding && (
